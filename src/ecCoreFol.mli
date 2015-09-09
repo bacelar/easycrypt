@@ -59,6 +59,11 @@ and f_node =
   | Ftuple  of form list
   | Fproj   of form * int
 
+  (* Memories *)
+  | Fcrmem of crmemory
+  | Fupmem of upmemory
+
+  (* Non-ambient logic *)
   | FhoareF of hoareF (* $hr / $hr *)
   | FhoareS of hoareS (* $hr  / $hr   *)
 
@@ -71,6 +76,9 @@ and f_node =
   | FeagerF of eagerF
 
   | Fpr of pr (* hr *)
+
+and crmemory = form Mpv.t
+and upmemory = form * ((Sid.t * Spv.t) * form)
 
 and eagerF = {
   eg_pr : form;

@@ -24,6 +24,9 @@ and ty_node =
   | Ttuple  of ty list
   | Tconstr of EcPath.path * ty list
   | Tfun    of ty * ty
+  | Tmem    of memty
+
+and memty = ty Msym.t
 
 module Mty : Map.S with type key = ty
 module Sty : Set.S with module M = Map.MakeBase(Mty)
@@ -147,6 +150,10 @@ val xp_glob : EcPath.xpath -> EcPath.xpath
 val pv_res  : EcPath.xpath -> prog_var
 val pv_arg  : EcPath.xpath -> prog_var
 val pv      : EcPath.xpath -> pvar_kind -> prog_var
+
+(* -------------------------------------------------------------------- *)
+module Mpv : Map.S with type key = prog_var
+module Spv : Set.S with module M = Map.MakeBase(Mpv)
 
 (* -------------------------------------------------------------------- *)
 type expr = private {

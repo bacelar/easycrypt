@@ -7,6 +7,7 @@
 
 (* -------------------------------------------------------------------- *)
 open EcUtils
+open EcSymbols
 open EcIdent
 open EcPath
 open EcUid
@@ -27,6 +28,9 @@ and ty_node =
   | Ttuple  of ty list
   | Tconstr of EcPath.path * ty list
   | Tfun    of ty * ty
+  | Tmem    of memty
+
+and memty = ty Msym.t
 
 type dom = ty list
 
@@ -409,6 +413,15 @@ let pv x k =
 let pv_subst m_subst px = 
   let mp' = m_subst px.pv_name in
   if px.pv_name == mp' then px else pv mp' px.pv_kind
+
+(* -------------------------------------------------------------------- *)
+module Mpv = 
+  EcMaps.Map.Make(struct
+    type t = prog_var 
+    let compare = pv_compare_p 
+  end)
+
+module Spv = EcMaps.Set.MakeOfMap(Mpv)    
 
 (* -------------------------------------------------------------------- *)
 type lpattern =
