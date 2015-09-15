@@ -57,8 +57,10 @@ module Hsty = Why3.Hashcons.Make (struct
     | Tconstr (p1, lt1), Tconstr (p2, lt2) -> 
         EcPath.p_equal p1 p2 && List.all2 ty_equal lt1 lt2
 
-    | Tfun (d1, c1), Tfun (d2, c2)-> 
+    | Tfun (d1, c1), Tfun (d2, c2) -> 
         ty_equal d1 d2 && ty_equal c1 c2
+
+    | Tmem mt1, Tmem mt2 -> Msym.equal ty_equal mt1 mt2
 
     | _, _ -> false
       
@@ -70,18 +72,21 @@ module Hsty = Why3.Hashcons.Make (struct
     | Ttuple  tl       -> Why3.Hashcons.combine_list ty_hash 0 tl
     | Tconstr (p, tl)  -> Why3.Hashcons.combine_list ty_hash p.p_tag tl
     | Tfun    (t1, t2) -> Why3.Hashcons.combine (ty_hash t1) (ty_hash t2)
+    | Tmem    mt       -> 
+      Msym.fold (fun _ ty h -> Why3.Hashcons.combine (ty_hash ty) h) mt 0
         
   let fv ty =
-    let union ex =
-      List.fold_left (fun s a -> fv_union s (ex a)) Mid.empty in
-
+    let union =
+      List.fold_left (fun s a -> fv_union s a.ty_fv) Mid.empty in
     match ty with
     | Tglob m          -> EcPath.m_fv Mid.empty m
     | Tunivar _        -> Mid.empty
     | Tvar    _        -> Mid.empty
-    | Ttuple  tys      -> union (fun a -> a.ty_fv) tys
-    | Tconstr (_, tys) -> union (fun a -> a.ty_fv) tys
-    | Tfun    (t1, t2) -> union (fun a -> a.ty_fv) [t1; t2]
+    | Ttuple  tys      -> union tys
+    | Tconstr (_, tys) -> union tys
+    | Tfun    (t1, t2) -> union [t1; t2]
+    | Tmem    mt       -> 
+      Msym.fold (fun _ ty fv -> fv_union fv ty.ty_fv) mt Mid.empty
 
   let tag n ty = { ty with ty_tag = n; ty_fv = fv ty.ty_node; }
 end)
@@ -120,6 +125,12 @@ let rec dump_ty ty =
   | Tfun (t1, t2) ->
       Printf.sprintf "(%s) -> (%s)" (dump_ty t1) (dump_ty t2)
 
+  | Tmem mt ->
+    let locals =
+      Msym.fold (fun s ty loc -> Printf.sprintf "%s%s:%s" s (dump_ty ty) loc)
+        mt "" in
+      Printf.sprintf "mem[%s]" locals
+
 (* -------------------------------------------------------------------- *)
 let tuni uid     = mk_ty (Tunivar uid)
 let tvar id      = mk_ty (Tvar id)
@@ -143,6 +154,8 @@ let ttuple lt    =
  
 let toarrow dom ty = 
   List.fold_right tfun dom ty
+
+let tmem mt = mk_ty (Tmem mt)
 
 (* -------------------------------------------------------------------- *)
 let tytuple_flat (ty : ty) =
@@ -168,6 +181,9 @@ module TySmart = struct
 
   let tfun (ty, (t1, t2)) (t1', t2') =
     if t1 == t1' && t2 == t2' then ty else tfun t1' t2'
+
+  let tmem (ty, mt) mt' =
+    if Msym.equal (==) mt mt' then ty else tmem mt' 
 end
 
 (* -------------------------------------------------------------------- *)
@@ -185,12 +201,16 @@ let ty_map f t =
   | Tfun (t1, t2) -> 
       TySmart.tfun (t, (t1, t2)) (f t1, f t2)
 
+  | Tmem mt ->
+      TySmart.tmem (t, mt) (Msym.map f mt)
+
 let ty_fold f s ty = 
   match ty.ty_node with 
   | Tglob _ | Tunivar _ | Tvar _ -> s
-  | Ttuple lty -> List.fold_left f s lty
+  | Ttuple lty      -> List.fold_left f s lty
   | Tconstr(_, lty) -> List.fold_left f s lty
-  | Tfun(t1,t2) -> f (f s t1) t2
+  | Tfun(t1,t2)     -> f (f s t1) t2
+  | Tmem mt         -> Msym.fold (fun _ ty s -> f s ty) mt s
 
 let ty_sub_exists f t =
   match t.ty_node with
@@ -198,6 +218,7 @@ let ty_sub_exists f t =
   | Ttuple lty -> List.exists f lty
   | Tconstr (_, lty) -> List.exists f lty
   | Tfun (t1, t2) -> f t1 || f t2
+  | Tmem mt       -> Msym.exists (fun _ ty -> f ty) mt
 
 let ty_iter f t = 
   match t.ty_node with
@@ -205,6 +226,7 @@ let ty_iter f t =
   | Ttuple lty -> List.iter f lty
   | Tconstr (_, lty) -> List.iter f lty
   | Tfun (t1,t2) -> f t1; f t2
+  | Tmem mt -> Msym.iter (fun _ ty -> f ty) mt
 
 exception FoundUnivar
 
@@ -221,6 +243,7 @@ let symbol_of_ty (ty : ty) =
   | Tvar    _      -> "x"
   | Ttuple  _      -> "x"
   | Tfun    _      -> "f"
+  | Tmem _         -> "m"
   | Tconstr (p, _) ->
       let x = EcPath.basename p in
       let rec doit i =
@@ -231,6 +254,7 @@ let symbol_of_ty (ty : ty) =
              | _ -> doit (i+1)
       in
         doit 0
+
 
 let fresh_id_of_ty (ty : ty) =
   EcIdent.create (symbol_of_ty ty)
@@ -268,6 +292,9 @@ let rec ty_subst s =
       | Tvar id       -> odfl ty (s.ts_v id)
       | Ttuple lty    -> TySmart.ttuple (ty, lty) (List.Smart.map aux lty)
       | Tfun (t1, t2) -> TySmart.tfun (ty, (t1, t2)) (aux t1, aux t2)
+
+      | Tmem mt       ->
+        TySmart.tmem (ty,mt) (Msym.map aux mt)
 
       | Tconstr(p, lty) -> begin
         match Mp.find_opt p s.ts_def with
