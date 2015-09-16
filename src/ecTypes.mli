@@ -45,6 +45,7 @@ val ttuple  : ty list -> ty
 val tconstr : EcPath.path -> ty list -> ty
 val tfun    : ty -> ty -> ty
 val tglob   : EcPath.mpath -> ty 
+val tmem    : memty -> ty
 
 (* -------------------------------------------------------------------- *)
 val tunit   : ty

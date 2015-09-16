@@ -2182,7 +2182,7 @@ module NormMp = struct
   let norm_glob env m mp = globals env m mp
 
   let norm_tglob env mp =
-    let g = (norm_glob env mhr mp) in
+    let g = (norm_glob env (f_gmem mhr) mp) in
     g.f_ty
 
   let tglob_reducible env mp =
@@ -2204,15 +2204,7 @@ module NormMp = struct
       let gty =
         match gty with
         | GTty ty -> GTty (norm_ty env ty)
-        | GTmodty _ -> gty
-        | GTmem None -> gty
-        | GTmem (Some mt) ->
-          let me =
-            EcMemory.empty_local id (norm_xfun env (EcMemory.lmt_xpath mt)) in
-          let me = Msym.fold (fun id (p,ty) me ->
-            EcMemory.bindp id p (norm_ty env ty) me)
-              (EcMemory.lmt_bindings mt) me  in
-          GTmem (snd me) in
+        | GTmodty _ -> gty in
       id,gty in
 
     let has_mod b =
@@ -2447,7 +2439,7 @@ module Op = struct
     let f  =
       match op.op_kind with
       | OB_oper (Some (OP_Plain e)) ->
-          form_of_expr EcCoreFol.mhr e
+          form_of_expr e
       | OB_pred (Some idsf) ->
           idsf
       | _ -> raise NotReducible

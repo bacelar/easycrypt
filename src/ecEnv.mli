@@ -233,7 +233,7 @@ module NormMp : sig
   val get_restr  : env -> mpath -> use
   val use_mem_xp : xpath -> use -> bool
   val use_mem_gl : mpath -> use -> bool
-  val norm_glob  : env -> EcMemory.memory -> mpath -> form
+  val norm_glob  : env -> form (* memory *) -> mpath -> form
   val norm_tglob : env -> mpath -> EcTypes.ty
   val tglob_reducible : env -> mpath -> bool
   val is_abstract_fun : xpath -> env -> bool

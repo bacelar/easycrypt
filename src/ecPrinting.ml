@@ -675,6 +675,12 @@ let rec pp_type_r ppe outer fmt ty =
           (pp_type_r ppe (t_prio_fun, `Right)) t2
       in
         maybe_paren_nosc outer t_prio_fun pp fmt (t1, t2)
+  | Tmem mt ->
+    let pp_decl fmt (x,ty) = 
+      Format.fprintf fmt "%a:%a" EcSymbols.pp_symbol x 
+        (pp_type_r ppe (min_op_prec, `NonAssoc)) ty in
+    Format.fprintf fmt "mem{@[%a@]}" (pp_list ";@ " pp_decl) (Msym.bindings mt)
+      
 
 let pp_type ppe fmt ty =
   pp_type_r ppe (min_op_prec, `NonAssoc) fmt ty
@@ -1259,7 +1265,8 @@ let pp_binding (ppe : PPEnv.t) (xs, ty) =
       in
         (tenv1, pp)
 
-  | GTmem m ->
+ (* OPMEM: PY how to do this *)
+(* | GTmem m ->
       let tenv1 = PPEnv.add_locals ppe xs in
       let tenv1 =
         match m with
@@ -1273,7 +1280,7 @@ let pp_binding (ppe : PPEnv.t) (xs, ty) =
       let pp fmt =
         Format.fprintf fmt "%a" (pp_list "@ " (pp_local tenv1)) xs
       in
-        (tenv1, pp)
+        (tenv1, pp) *)
 
   | GTmodty (p, sm) ->
       let tenv1  = PPEnv.add_mods ppe xs p in
@@ -1320,8 +1327,8 @@ let rec try_pp_form_eqveq (ppe : PPEnv.t) _outer fmt f =
     match sform_of_form f with
     | SFeq ({ f_node = Fpvar (x1, me1) },
             { f_node = Fpvar (x2, me2) })
-        when (EcMemory.mem_equal me1 EcFol.mleft )
-          && (EcMemory.mem_equal me2 EcFol.mright)
+        when (is_local_id me1 EcFol.mleft )
+          && (is_local_id me2 EcFol.mright)
         ->
 
       let pv1 = msymbol_of_pv (PPEnv.enter_by_memid ppe EcFol.mleft ) x1 in
@@ -1331,8 +1338,8 @@ let rec try_pp_form_eqveq (ppe : PPEnv.t) _outer fmt f =
 
     | SFeq ({ f_node = Fglob (x1, me1) },
             { f_node = Fglob (x2, me2) })
-        when (EcMemory.mem_equal me1 EcFol.mleft )
-          && (EcMemory.mem_equal me2 EcFol.mright)
+        when (is_local_id me1 EcFol.mleft )
+          && (is_local_id me2 EcFol.mright)
         ->
 
       let pv1 = (PPEnv.mod_symb ppe x1) in
@@ -1464,7 +1471,7 @@ and pp_form_core_r (ppe : PPEnv.t) outer fmt f =
 
   | Fpvar (x, i) -> begin
     match EcEnv.Memory.get_active ppe.PPEnv.ppe_env with
-    | Some i' when EcMemory.mem_equal i i' ->
+    | Some i' when is_local_id  i i' ->
         Format.fprintf fmt "%a" (pp_pv ppe) x
     | _ ->
         let ppe = PPEnv.enter_by_memid ppe i in

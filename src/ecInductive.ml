@@ -92,6 +92,7 @@ let indsc_of_datatype ?normty (mode : indmode) (dt : datatype) =
     match (normty ty).ty_node with
     | Tglob   _ -> assert false
     | Tunivar _ -> assert false
+    | Tmem    _ -> assert false (* OPMEM: PY, FIXME *)
     | Tvar    _ -> None
 
     | Ttuple tys -> begin
