@@ -30,16 +30,18 @@ type proof_uc = {
 }
 
 and proof_auc = {
-  puc_name   : string;
+  puc_name   : symbol option;
   puc_mode   : bool option;
   puc_jdg    : proof_state;
   puc_flags  : pucflags;
   puc_crt    : EcDecl.axiom;
 }
 
-and proof_ctxt = (symbol * EcDecl.axiom) * EcPath.path * EcEnv.env
+and proof_ctxt =
+  (symbol option * EcDecl.axiom) * EcPath.path * EcEnv.env
 
-and proof_state = PSNoCheck | PSCheck of EcCoreGoal.proof
+and proof_state =
+  PSNoCheck | PSCheck of EcCoreGoal.proof
 
 and pucflags = {
   puc_nosmt : bool;
@@ -68,7 +70,12 @@ val check_state : topmode -> string -> scope -> unit
 val dump_why3 : scope -> string -> unit
 
 (* -------------------------------------------------------------------- *)
+exception UnknownFlag of string
+
 module Options : sig
+  val set : scope -> string -> bool -> scope
+  val get : scope -> string -> bool
+
   val set_implicits : scope -> bool -> scope
   val get_implicits : scope -> bool
 end

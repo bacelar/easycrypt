@@ -25,11 +25,6 @@ module MSym = EcSymbols.Msym
 module BI   = EcBigInt
 
 (* -------------------------------------------------------------------- *)
-type action = {
-  for_loading  : exn -> exn;
-}
-
-(* -------------------------------------------------------------------- *)
 exception HiScopeError of EcLocation.t option * string
 
 let pp_hi_scope_error fmt exn =
@@ -92,10 +87,11 @@ let rec toperror_of_exn_r ?gloc exn =
   | EcLexer.LexicalError (loc, _) ->
       Some (odfl (odfl _dummy gloc) loc, exn)
 
-  | EcCoreGoal.TcError (_, None, _) ->
+  | EcCoreGoal.TcError { EcCoreGoal.tc_location = None } ->
       Some (odfl _dummy gloc, exn)
 
-  | EcCoreGoal.TcError (_, Some { EcCoreGoal.plc_loc = loc }, _) ->
+  | EcCoreGoal.TcError
+      { EcCoreGoal.tc_location = Some { EcCoreGoal.plc_loc = loc } } ->
       let gloc = if EcLocation.isdummy loc then gloc else Some loc in
       Some (odfl _dummy gloc, exn)
 
@@ -145,127 +141,143 @@ let () =
     EcPException.register pp
 
 (* -------------------------------------------------------------------- *)
+type goption = ..
+
 module type IOptions = sig
-  type option
-
-  val register          : action -> exn -> option
-  val register_identity : exn -> option
-
+  type oid
   type options
 
-  val init         : unit -> options
-  val get          : options -> option -> exn
-  val set          : options -> option -> exn -> options
+  type action = { for_loading : goption -> goption; }
+
+  val register     : ?action:action -> goption -> oid
+  val freeze       : unit -> options
+  val get          : options -> oid -> goption
+  val set          : options -> oid -> goption -> options
   val for_loading  : options -> options
   val for_subscope : options -> options
 end
 
 (* -------------------------------------------------------------------- *)
 module GenOptions : IOptions = struct
-  type option = int
+  type action  = { for_loading : goption -> goption; }
+  type oid     = EcUid.uid
+  type options = (action * goption) EcUid.Muid.t
 
-  type options = (action * exn) Mint.t
+  let options : options ref =
+    ref EcUid.Muid.empty
 
-  let known_options : options ref = ref Mint.empty
+  let identity = { for_loading = (fun x -> x); }
 
-  let identity = {
-    for_loading = (fun x -> x);
-  }
+  let register ?(action = identity) goption =
+    let oid = EcUid.unique () in
+    options := EcUid.Muid.add oid (action, goption) !options; oid
 
-  let count = ref 0
-  let initialized = ref false
+  let freeze () =
+    !options
 
-  let register action exn =
-    if !initialized then assert false;
-    let opt = !count in
-    incr count;
-    known_options := Mint.add opt (action,exn) !known_options;
-    opt
+  let get (options : options) (oid : oid) =
+    snd (oget (EcUid.Muid.find_opt oid options))
 
-  let register_identity = register identity
-
-  let init () =
-    initialized := true;
-    !known_options
-
-  let get options opt =
-    snd (Mint.find opt options)
-
-  let set options opt exn =
-    Mint.change
-      (function None -> assert false | Some(act,_) -> Some (act, exn))
-      opt options
+  let set (options : options) (oid : oid) (goption : goption) =
+    EcUid.Muid.change (fun k -> Some (fst (oget k), goption)) oid options
 
   let for_loading options =
-    Mint.map (fun (act, exn) -> act, act.for_loading exn) options
+    EcUid.Muid.map (fun (act, exn) -> act, act.for_loading exn) options
 
-  let for_subscope options = options
+  let for_subscope options =
+    options
 end
 
 (* -------------------------------------------------------------------- *)
 module Check_mode = struct
   type mode = [`Off | `On | `Forced]
 
-  exception Check of mode
+  type goption += Check of mode
 
-  let mode =
+  let oid =
     let for_loading = function
       | Check `Off    -> Check `Off
       | Check `On     -> Check `Off
       | Check `Forced -> Check `Forced
       | exn           -> exn
-    in GenOptions.register { for_loading } (Check `On)
+    in GenOptions.register ~action:({ GenOptions.for_loading }) (Check `On)
 
   let check options =
-    match GenOptions.get options mode with
+    match GenOptions.get options oid with
     | Check `On     -> true
     | Check `Forced -> true
     | Check `Off    -> false
     | _ -> true
 
   let set_checkproof options b =
-    match GenOptions.get options mode with
-    | Check `On  when not b -> GenOptions.set options mode (Check `Off)
-    | Check `Off when     b -> GenOptions.set options mode (Check `On )
+    match GenOptions.get options oid with
+    | Check `On  when not b -> GenOptions.set options oid (Check `Off)
+    | Check `Off when     b -> GenOptions.set options oid (Check `On )
     | _ -> options
 
   let set_fullcheck options =
-    GenOptions.set options mode (Check `Forced)
+    GenOptions.set options oid (Check `Forced)
 end
 
 (* -------------------------------------------------------------------- *)
 module Prover_info = struct
-  exception PI of EcProvers.prover_infos
+  type goption += PI of EcProvers.prover_infos
 
-  let npi = GenOptions.register_identity (PI EcProvers.dft_prover_infos)
+  let oid = GenOptions.register (PI EcProvers.dft_prover_infos)
 
   let set options pi =
-    GenOptions.set options npi (PI pi)
+    GenOptions.set options oid (PI pi)
 
   let get options =
-    match GenOptions.get options npi with
+    match GenOptions.get options oid with
     | PI pi -> pi
     | _     -> assert false
 end
 
 (* -------------------------------------------------------------------- *)
-module Implicits = struct
-  exception Implicits of bool
+module KnownFlags = struct
+  let implicits = "implicits"
 
-  let implicits =
-    let default = Implicits false in
+  let flags = [
+    (implicits, false);
+  ]
+end
+
+exception UnknownFlag of string
+
+module Flags : sig
+  open GenOptions
+
+  val get : options -> string -> bool
+  val set : options -> string -> bool -> options
+end = struct
+  type flags    = bool Mstr.t
+  type goption += Flags of flags
+
+  exception UnknownFlag of string
+
+  let asflags = function Flags m -> m | _ -> assert false
+
+  let oid = 
+    let default = Mstr.of_list KnownFlags.flags in
     let for_loading = function
-      | Implicits _ -> Implicits false
-      | exn         -> exn
-    in GenOptions.register { for_loading } default
+      | Flags _ -> Flags default
+      | exn -> exn
+    in GenOptions.register ~action:{ GenOptions.for_loading } (Flags default)
 
-  let set options value =
-    GenOptions.set options implicits (Implicits value)
+  let get options name =
+    let flags = asflags (GenOptions.get options oid) in
+    oget ~exn:(UnknownFlag name) (Mstr.find_opt name flags)
 
-  let get options =
-    match GenOptions.get options implicits with
-    | Implicits value -> value
-    | _ -> assert false
+  let set options name value =
+    let flags = asflags (GenOptions.get options oid) in
+    let flags =
+      Mstr.change (fun x ->
+        ignore (oget ~exn:(UnknownFlag name) x : bool);
+        Some value)
+      name flags in
+
+    GenOptions.set options oid (Flags flags)
 end
 
 (* -------------------------------------------------------------------- *)
@@ -275,16 +287,18 @@ type proof_uc = {
 }
 
 and proof_auc = {
-  puc_name   : string;
+  puc_name   : symbol option;
   puc_mode   : bool option;
   puc_jdg    : proof_state;
   puc_flags  : pucflags;
   puc_crt    : EcDecl.axiom;
 }
 
-and proof_ctxt = (symbol * EcDecl.axiom) * EcPath.path * EcEnv.env
+and proof_ctxt =
+  (symbol option * EcDecl.axiom) * EcPath.path * EcEnv.env
 
-and proof_state = PSNoCheck | PSCheck of EcCoreGoal.proof
+and proof_state =
+  PSNoCheck | PSCheck of EcCoreGoal.proof
 
 and pucflags = {
   puc_nosmt : bool;
@@ -321,7 +335,7 @@ let empty (gstate : EcGState.gstate) =
     sc_loaded     = Msym.empty;
     sc_required   = [];
     sc_pr_uc      = None;
-    sc_options    = GenOptions.init ();
+    sc_options    = GenOptions.freeze ();
     sc_section    = EcSection.initial; }
 
 (* -------------------------------------------------------------------- *)
@@ -391,11 +405,18 @@ let notify (scope : scope) (lvl : EcGState.loglevel) =
 
 (* -------------------------------------------------------------------- *)
 module Options = struct
+  let get scope name =
+    Flags.get scope.sc_options name
+
+  let set scope name value =
+    { scope with sc_options =
+        Flags.set scope.sc_options name value }
+    
   let get_implicits scope =
-    Implicits.get scope.sc_options
+    get scope KnownFlags.implicits
 
   let set_implicits scope value =
-    { scope with sc_options = Implicits.set scope.sc_options value }
+    set scope KnownFlags.implicits value
 end
 
 (* -------------------------------------------------------------------- *)
@@ -639,7 +660,7 @@ module Tactics = struct
       in
         { scope with sc_pr_uc = Some { (oget scope.sc_pr_uc) with puc_active = Some pac; } }
 
-  let process_r mark mode (scope : scope) (tac : ptactic list) =
+  let process_r ?reloc mark mode (scope : scope) (tac : ptactic list) =
     check_state `InProof "proof script" scope;
 
     let scope =
@@ -678,7 +699,17 @@ module Tactics = struct
           EcHiGoal.tt_smtmode    = htmode;
           EcHiGoal.tt_implicits  = Options.get_implicits scope; } in
 
-        let hds, juc = TTC.process ttenv tac juc in
+        let (hds, juc) =
+          try  TTC.process ttenv tac juc
+          with EcCoreGoal.TcError tcerror ->
+            let tcerror =
+              ofold
+                (fun reloc error ->
+                  { error with EcCoreGoal.tc_reloced = Some (reloc, true) })
+                tcerror reloc
+            in raise (EcCoreGoal.TcError tcerror)
+        in
+
         let penv = EcCoreGoal.proofenv_of_proof juc in
 
         let pac = { pac with puc_jdg = PSCheck juc } in
@@ -725,7 +756,7 @@ module Ax = struct
       scope
 
   (* ------------------------------------------------------------------ *)
-  let start_lemma scope (cont, axflags) check name axd =
+  let start_lemma scope (cont, axflags) check ?name axd =
     let puc =
       match check with
       | false -> PSNoCheck
@@ -806,21 +837,21 @@ module Ax = struct
 
     match ax.pa_kind with
     | PILemma ->
-        let scope = start_lemma scope pucflags check (unloc ax.pa_name) axd in
+        let scope = start_lemma scope ~name:(unloc ax.pa_name) pucflags check axd in
         let scope = Tactics.process_core false `Check scope [tintro] in
         None, scope
 
     | PLemma tc ->
         start_lemma_with_proof scope
           (Some tintro) pucflags (mode, mk_loc loc tc) check
-          (unloc ax.pa_name) axd
+          ~name:(unloc ax.pa_name) axd
 
     | PAxiom _ ->
         Some (unloc ax.pa_name),
         bind scope (snd pucflags).puc_local (unloc ax.pa_name, axd)
 
   (* ------------------------------------------------------------------ *)
-  and add_for_cloning (scope : scope) proofs =
+  and add_defer (scope : scope) proofs =
     match proofs with
     | [] -> scope
     | _  ->
@@ -856,17 +887,21 @@ module Ax = struct
 
     let scope =
       match snd puc.puc_cont with
-      | Some e -> { scope with sc_env = e }
-      | None   -> bind scope pac.puc_flags.puc_local (pac.puc_name, pac.puc_crt)
-    in
+      | Some e ->
+          { scope with sc_env = e }
 
-      (Some pac.puc_name, scope)
+      | None ->
+          let bind name scope =
+            bind scope pac.puc_flags.puc_local (name, pac.puc_crt)
+          in pac.puc_name |> ofold bind scope
+
+    in (pac.puc_name, scope)
 
   (* ------------------------------------------------------------------ *)
-  and start_lemma_with_proof scope tintro pucflags (mode, tc) check name axd =
+  and start_lemma_with_proof scope tintro pucflags (mode, tc) check ?name axd =
     let { pl_loc = loc; pl_desc = tc } = tc in
 
-    let scope = start_lemma scope pucflags check name axd in
+    let scope = start_lemma scope pucflags check ?name axd in
     let scope =
       match tintro with
       | None -> scope
@@ -926,12 +961,12 @@ module Ax = struct
 
     match rl.pr_proof with
     | None ->
-        None, start_lemma scope pucflags check axname ax 
+        None, start_lemma scope pucflags check ?name:axname ax 
 
     | Some tc ->
         start_lemma_with_proof scope
           None pucflags (mode, mk_loc loc tc) check
-          axname ax
+          ?name:axname ax
 end
 
 (* -------------------------------------------------------------------- *)
@@ -1263,7 +1298,7 @@ module Mod = struct
       let ppe = EcPrinting.PPEnv.ofenv (env scope) in
       let pp fmt (xp, names) =
         Format.fprintf fmt "  - %a -> [%a]"
-          (EcPrinting.pp_funname ppe) xp
+          (EcPrinting.pp_funname ppe) (xastrip xp)
           (EcPrinting.pp_list ", " pp_symbol)
           (List.map EcPath.xbasename (Sx.elements names))
       in
@@ -1504,13 +1539,20 @@ module Ty = struct
           if Sstr.mem (unloc x) m then
             hierror ~loc:(x.pl_loc) "duplicated axiom name: `%s'" (unloc x);
           (Sstr.add (unloc x) m, (unloc x, t, Mstr.find (unloc x) rmap)))
-        Sstr.empty axs
-    in
-      List.iter
-        (fun (x, _) ->
+        Sstr.empty axs in
+
+    let interactive =
+      List.pmap
+        (fun (x, req) ->
            if not (Mstr.mem x symbs) then
-             hierror "no proof for axiom `%s'" x)
-        reqs;
+             let ax = {
+               ax_tparams = [];
+               ax_spec    = Some req;
+               ax_kind    = `Lemma;
+               ax_nosmt   = true;
+             } in Some ((None, ax), EcPath.psymbol x, scope.sc_env)
+           else None)
+        reqs in
       List.iter
         (fun (x, pt, f) ->
           let x  = "$" ^ x in
@@ -1527,11 +1569,12 @@ module Ty = struct
           let check    = Check_mode.check scope.sc_options in
 
           let escope = scope in
-          let escope = Ax.start_lemma escope pucflags check x ax in
+          let escope = Ax.start_lemma escope pucflags check ~name:x ax in
           let escope = Tactics.proof escope mode true in
-          let escope = snd (Tactics.process_r false mode escope [t]) in
+          let escope = snd (Tactics.process_r ~reloc:x false mode escope [t]) in
             ignore (Ax.save escope pt.pl_loc))
-        axs
+        axs;
+      interactive
 
   (* ------------------------------------------------------------------ *)
   let p_zmod    = EcPath.fromqsymbol ([EcCoreLib.i_top; "Ring"; "ZModule"], "zmodule")
@@ -1569,12 +1612,15 @@ module Ty = struct
     let symbols = check_tci_operators scope.sc_env ty tci.pti_ops symbols in
     let cr      = ring_of_symmap scope.sc_env (snd ty) kind symbols in
     let axioms  = EcAlgTactic.ring_axioms scope.sc_env cr in
-      check_tci_axioms scope mode tci.pti_axs axioms;
+    let inter   = check_tci_axioms scope mode tci.pti_axs axioms in
+    let scope   =
       { scope with sc_env =
           List.fold_left
             (fun env p -> EcEnv.TypeClass.add_instance ty (`General p) env)
             (EcEnv.Algebra.add_ring (snd ty) cr scope.sc_env)
             [p_zmod; p_ring; p_idomain] }
+
+    in Ax.add_defer scope inter
 
   (* ------------------------------------------------------------------ *)
   let field_of_symmap env ty symbols =
@@ -1596,12 +1642,15 @@ module Ty = struct
     let symbols = check_tci_operators scope.sc_env ty tci.pti_ops symbols in
     let cr      = field_of_symmap scope.sc_env (snd ty) symbols in
     let axioms  = EcAlgTactic.field_axioms scope.sc_env cr in
-      check_tci_axioms scope mode tci.pti_axs axioms;
+    let inter   = check_tci_axioms scope mode tci.pti_axs axioms; in
+    let scope   =
       { scope with sc_env =
           List.fold_left
             (fun env p -> EcEnv.TypeClass.add_instance ty (`General p) env)
             (EcEnv.Algebra.add_field (snd ty) cr scope.sc_env)
             [p_zmod; p_ring; p_idomain; p_field] }
+
+    in Ax.add_defer scope inter
 
   (* ------------------------------------------------------------------ *)
   let symbols_of_tc (_env : EcEnv.env) ty (tcp, tc) =
@@ -2465,7 +2514,9 @@ module Cloning = struct
 
     let proofs = List.pmap (fun axc ->
       match axc.C.axc_tac with
-      | None -> Some (axc.C.axc_axiom, axc.C.axc_path, axc.C.axc_env)
+      | None ->
+          Some (fst_map some axc.C.axc_axiom, axc.C.axc_path, axc.C.axc_env)
+
       | Some pt ->
           let t = { pt_core = pt; pt_intros = []; } in
           let t = { pl_loc = pt.pl_loc; pl_desc = Pby (Some [t]); } in
@@ -2477,9 +2528,9 @@ module Cloning = struct
           let check    = Check_mode.check scope.sc_options in
 
           let escope = { scope with sc_env = axc.C.axc_env; } in
-          let escope = Ax.start_lemma escope pucflags check x ax in
+          let escope = Ax.start_lemma escope pucflags check ~name:x ax in
           let escope = Tactics.proof escope mode true in
-          let escope = snd (Tactics.process_r false mode escope [t]) in
+          let escope = snd (Tactics.process_r ~reloc:x false mode escope [t]) in
             ignore (Ax.save escope pt.pl_loc); None)
       proofs
     in
@@ -2492,7 +2543,7 @@ module Cloning = struct
         | `Include -> scope)
         scope
 
-    in Ax.add_for_cloning scope proofs
+    in Ax.add_defer scope proofs
 
 end
 
